@@ -1,0 +1,21 @@
+diff --git a/node_modules/mapgpu/dist/core/engine/MapView.js b/node_modules/mapgpu/dist/core/engine/MapView.js
+index 42cb3c5..81e61de 100644
+--- a/node_modules/mapgpu/dist/core/engine/MapView.js
++++ b/node_modules/mapgpu/dist/core/engine/MapView.js
+@@ -173,8 +173,14 @@ export class MapView {
+             this._core.renderLoop.markDirty();
+             this._events.emit('layer-add', { layer });
+             layer.on('refresh', () => {
+-                this._core.bufferCache.invalidate(layer.id);
+-                this._core.terrainManager.invalidateLayer(layer.id);
++                // Vector tiles call redraw() on every tile load. Full invalidate
++                // wipes all per-tile GPU meshes and causes pitched-view flicker.
++                // For vector-tile layers, only mark dirty so getOrBuildTile can
++                // keep existing tile buffers and build newly ready ones.
++                if (layer.type !== 'vector-tile') {
++                    this._core.bufferCache.invalidate(layer.id);
++                    this._core.terrainManager.invalidateLayer(layer.id);
++                }
+                 this._core.renderLoop.markDirty();
+             });
+             layer.on('visibility-change', () => {

@@ -24,7 +24,9 @@
                 "input": "public"
               }
             ],
-            "styles": ["src/styles.css"]
+            "styles": [
+              "src/styles.css"
+            ]
           },
           "configurations": {
             "production": {
@@ -51,6 +53,16 @@
           "defaultConfiguration": "production"
         },
         "serve": {
+          "options": {
+            "prebundle": {
+              "exclude": [
+                "mapgpu",
+                "mapgpu/core",
+                "mapgpu/layers",
+                "mapgpu/render"
+              ]
+            }
+          },
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": {
