@@ -1,0 +1,20 @@
+import type { AppConfigSettings } from './app-config.model';
+
+/** Production settings — all debug options forced off. */
+export const appConfigSettings: AppConfigSettings = {
+  debug: {
+    logClickCoordinates: false,
+    showFps: false,
+  },
+  controls: {
+    mode: 'joystick',
+    joystick: {
+      followZoom: 16.5,
+      followPitch: 15,
+      followBearing: 0,
+      moveSpeedMps: 10,
+      radiusPx: 72,
+      playerStart: [22.298340533604744, 48.62222379006886],
+    },
+  },
+};

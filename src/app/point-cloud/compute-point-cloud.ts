@@ -9,6 +9,8 @@ const FLOATS_PER_REST = 8;
 /** Animated output: xyz + heightT (for gradient). */
 const FLOATS_PER_OUT = 4;
 const WORKGROUP_SIZE = 64;
+/** Slow yaw around the figurine up-axis (radians / second). ~one turn / 50s. */
+const YAW_RAD_PER_SEC = 0.125;
 
 // GPUBufferUsage flags (numeric — @webgpu/types not in this project)
 const USAGE_COPY_DST = 0x0008;
@@ -30,13 +32,13 @@ interface PainterJson {
 
 /**
  * GPU compute animates rest poses → live positions; WGSLLayer draws them as
- * `point-list` (1 vertex per point — no quad expansion).
+ * instanced screen-space quads (`triangle-list`, 6 verts × N instances).
  *
  * Per frame:
- *   1. MapView renders (reads `outBuffer` as vertex data, point-list)
+ *   1. MapView renders (reads `outBuffer` as per-instance data)
  *   2. 'frame' event → compute dispatch updates `outBuffer` for next frame
  *
- * Note: WebGPU point-list points are ~1×1 px (no programmable point size).
+ * Animation: vertical sine wave + slow rotation around the anchor up-axis.
  */
 export class ComputePointCloud {
   private readonly device: GPUDevice;
@@ -48,6 +50,8 @@ export class ComputePointCloud {
   private computePipeline: GPUComputePipeline | null = null;
   private computeBindGroup: GPUBindGroup | null = null;
   private paramsData = new Float32Array(4);
+  private originX = 0;
+  private originY = 0;
   private pointCount = 0;
   private frameHandler: ((e: { frameNumber: number; fps: number }) => void) | null = null;
   private startTime = performance.now() / 1000;
@@ -83,6 +87,8 @@ export class ComputePointCloud {
     const scale = options.scale ?? 120;
     const flatHeightCompensation = 2 * Math.PI;
     const [originX, originY] = lonLatToMercator(options.anchorLon, options.anchorLat);
+    this.originX = originX;
+    this.originY = originY;
 
     let minZ = Infinity;
     let maxZ = -Infinity;
@@ -105,7 +111,8 @@ export class ComputePointCloud {
       rest[o + 2] = height;
       rest[o + 3] = 0.7 + hash * 2.8; // wavelength (seconds)
       rest[o + 4] = (p.x + p.y * 2.0 + p.z) * 8; // phase
-      rest[o + 5] = 0.35 + hash * 0.9; // amplitude
+      // Amplitude in stored height units (~3× previous 0.35–1.25 range).
+      rest[o + 5] = 1.2 + hash * 2.8;
       rest[o + 6] = (p.z - minZ) / zSpan; // normalized height for gradient
       rest[o + 7] = 0;
     }
@@ -169,9 +176,9 @@ export class ComputePointCloud {
     this.layer = this.createRenderLayer(options.id ?? 'painter-cloud-compute');
     this.mapView.map.add(this.layer);
     this.layer.setVertexBuffer(0, this.outBuffer);
-    // point-list: 1 vertex = 1 point (no 6-vert quad expansion)
     this.layer.setDrawParams({
-      vertexCount: this.pointCount,
+      vertexCount: 6,
+      instanceCount: this.pointCount,
     });
 
     // Prime once so first painted frame is already animated.
@@ -190,11 +197,11 @@ export class ComputePointCloud {
     return new WGSLLayer({
       id,
       animated: true,
-      topology: 'point-list',
+      topology: 'triangle-list',
       vertexBufferLayouts: [
         {
           arrayStride: 16,
-          stepMode: 'vertex',
+          stepMode: 'instance',
           attributes: [
             { shaderLocation: 0, offset: 0, format: 'float32x4' }, // xyz + heightT
           ],
@@ -220,9 +227,11 @@ struct VertexInput {
 struct VertexOutput {
   @builtin(position) clipPosition: vec4<f32>,
   @location(0) heightT: f32,
+  @location(1) uv: vec2<f32>,
 };
 
 const EARTH_RADIUS_M: f32 = 6378137.0;
+const POINT_SIZE: f32 = 1.5;
 
 fn projectPoint(pos: vec3<f32>) -> vec4<f32> {
   let merc01 = _epsg3857ToMerc01(pos.xy);
@@ -243,20 +252,47 @@ fn projectPoint(pos: vec3<f32>) -> vec4<f32> {
 }
 
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput {
+  var quadOffsets = array<vec2<f32>, 6>(
+    vec2<f32>(-0.5, -0.5),
+    vec2<f32>( 0.5, -0.5),
+    vec2<f32>(-0.5,  0.5),
+    vec2<f32>(-0.5,  0.5),
+    vec2<f32>( 0.5, -0.5),
+    vec2<f32>( 0.5,  0.5),
+  );
+
+  let offset = quadOffsets[vid];
+  let clipCenter = projectPoint(input.data.xyz);
+  let screenOffset = offset * POINT_SIZE;
+  let ndcOffset = vec2<f32>(
+    screenOffset.x * 2.0 / camera.viewport.x,
+    screenOffset.y * 2.0 / camera.viewport.y,
+  );
+
   var out: VertexOutput;
-  out.clipPosition = projectPoint(input.data.xyz);
+  out.clipPosition = vec4<f32>(
+    clipCenter.x + ndcOffset.x * clipCenter.w,
+    clipCenter.y + ndcOffset.y * clipCenter.w,
+    clipCenter.z,
+    clipCenter.w,
+  );
   out.heightT = input.data.w;
+  out.uv = offset + vec2<f32>(0.5, 0.5);
   return out;
 }
 `,
       fragmentShader: /* wgsl */ `
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+  let centered = input.uv - vec2<f32>(0.5, 0.5);
+  if (length(centered) > 0.5) {
+    discard;
+  }
   let bottom = vec3<f32>(0.25, 0.08, 0.55);
   let top = vec3<f32>(0.90, 0.72, 1.0);
   let rgb = mix(bottom, top, clamp(input.heightT, 0.0, 1.0));
-  return vec4<f32>(rgb, 0.86 * frame.opacity);
+  return vec4<f32>(rgb, 0.92 * frame.opacity);
 }
 `,
     });
@@ -273,11 +309,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       return;
     }
 
-    // time, count as f32 bit-cast for count is awkward — pack count as f32
     this.paramsData[0] = timeSeconds;
     this.paramsData[1] = this.pointCount;
-    this.paramsData[2] = 0;
-    this.paramsData[3] = 0;
+    this.paramsData[2] = this.originX;
+    this.paramsData[3] = this.originY;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsData);
 
     const encoder = this.device.createCommandEncoder({
@@ -324,8 +359,8 @@ struct RestParticle {
 struct SimParams {
   time: f32,
   count: f32,
-  _pad0: f32,
-  _pad1: f32,
+  originX: f32,
+  originY: f32,
 };
 
 @group(0) @binding(0) var<storage, read> restParticles: array<RestParticle>;
@@ -333,6 +368,7 @@ struct SimParams {
 @group(0) @binding(2) var<uniform> params: SimParams;
 
 const TWO_PI: f32 = 6.28318530718;
+const YAW_RAD_PER_SEC: f32 = ${YAW_RAD_PER_SEC};
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -344,7 +380,19 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   let p = restParticles[i];
   let wavelength = max(p.rest.w, 0.05);
-  var pos = p.rest.xyz;
+
+  // Slow spin around the figurine up-axis (through the anchor).
+  let angle = params.time * YAW_RAD_PER_SEC;
+  let c = cos(angle);
+  let s = sin(angle);
+  let dx = p.rest.x - params.originX;
+  let dy = p.rest.y - params.originY;
+
+  var pos = vec3<f32>(
+    params.originX + dx * c - dy * s,
+    params.originY + dx * s + dy * c,
+    p.rest.z,
+  );
   pos.z += sin(params.time * (TWO_PI / wavelength) + p.wave.x) * p.wave.y;
 
   // w carries normalized rest height for the fragment gradient

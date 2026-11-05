@@ -19,3 +19,87 @@ index 42cb3c5..81e61de 100644
                  this._core.renderLoop.markDirty();
              });
              layer.on('visibility-change', () => {
+diff --git a/node_modules/mapgpu/dist/core/engine/ViewCore.js b/node_modules/mapgpu/dist/core/engine/ViewCore.js
+index 1c0e471..18763dc 100644
+--- a/node_modules/mapgpu/dist/core/engine/ViewCore.js
++++ b/node_modules/mapgpu/dist/core/engine/ViewCore.js
+@@ -274,8 +274,12 @@ export class ViewCore {
+                 if (canvas.width !== pixelW || canvas.height !== pixelH) {
+                     canvas.width = pixelW;
+                     canvas.height = pixelH;
+-                    onResize(width, height);
+                 }
++                // Always notify the mode. Skipping when the backing store already
++                // matched left Mode3D on a stale frustum (tiles selected for the
++                // createCanvas fallback size). Opening DevTools resized the
++                // window and "magically" fixed vector-tile buildings.
++                onResize(width, height);
+             }
+         });
+         this.resizeObserver.observe(container);
+diff --git a/node_modules/mapgpu/dist/render/draw-delegate-custom.js b/node_modules/mapgpu/dist/render/draw-delegate-custom.js
+index a4ba262..d8c6332 100644
+--- a/node_modules/mapgpu/dist/render/draw-delegate-custom.js
++++ b/node_modules/mapgpu/dist/render/draw-delegate-custom.js
+@@ -41,6 +41,8 @@ export class DrawDelegateCustom {
+                     device: this.ctx.device,
+                     colorFormat: this.ctx.colorFormat,
+                     depthFormat: this.ctx.depthConfig.format,
++                    depthCompare: this.ctx.depthConfig.compareFunc,
++                    depthWriteEnabled: true,
+                     cameraBindGroupLayout: camLayout,
+                     shaderSource: call.shaderSource,
+                     vertexBufferLayouts: call.vertexBufferLayouts,
+diff --git a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.d.ts b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.d.ts
+index ec9e42a..364f6c7 100644
+--- a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.d.ts
++++ b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.d.ts
+@@ -29,6 +29,10 @@ export interface CustomPipelineDescriptor {
+     device: GPUDevice;
+     colorFormat: GPUTextureFormat;
+     depthFormat: GPUTextureFormat;
++    /** Defaults to `'less'`. Pass MapView depthConfig.compareFunc (3D: `'greater'`). */
++    depthCompare?: GPUCompareFunction;
++    /** Defaults to `true` so custom geometry participates in scene occlusion. */
++    depthWriteEnabled?: boolean;
+     cameraBindGroupLayout: GPUBindGroupLayout;
+     shaderSource: string;
+     vertexBufferLayouts: CustomVertexBufferLayout[];
+diff --git a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
+index 7ed1c1e..d0834f2 100644
+--- a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
++++ b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
+@@ -159,18 +159,10 @@ export function createCustomPipeline(desc) {
+             operation: 'add',
+         },
+     };
+-    // ─── CP5: Pipeline descriptor debug ───
+-    console.log('[CP5-DESC]', { topology: desc.topology, colorFormat, depthFormat });
+-    console.log('[CP5-BLEND]', JSON.stringify(blend));
+-    console.log('[CP5-DEPTH]', { depthWriteEnabled: false, depthCompare: 'always' });
+-    console.log('[CP5-VB]', vertexBuffers.map(vb => ({
+-        arrayStride: vb.arrayStride,
+-        attrCount: Array.from(vb.attributes).length,
+-    })));
+-    console.log('[CP5-BGL]', {
+-        groupCount: bindGroupLayouts.length,
+-        groups: bindGroupLayouts.map((_bgl, i) => `@group(${i})`),
+-    });
++    // Depth must follow the active MapView mode (3D uses reverse-Z → 'greater').
++    // Previous always/no-write made custom point clouds look flat and ignore buildings.
++    const depthCompare = desc.depthCompare ?? 'less';
++    const depthWriteEnabled = desc.depthWriteEnabled ?? true;
+     // Create pipeline
+     const pipeline = device.createRenderPipeline({
+         label: 'custom-render-pipeline',
+@@ -195,8 +187,8 @@ export function createCustomPipeline(desc) {
+         },
+         depthStencil: {
+             format: depthFormat,
+-            depthWriteEnabled: false,
+-            depthCompare: 'always',
++            depthWriteEnabled,
++            depthCompare,
+         },
+         multisample: {
+             count: desc.sampleCount ?? MSAA_SAMPLE_COUNT,

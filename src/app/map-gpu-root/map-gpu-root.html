@@ -1,1 +1,14 @@
-<div #mapGpuContainer class="map-gpu-container"></div>
+<div class="map-stage">
+  <div #mapGpuContainer class="map-gpu-container"></div>
+  @if (showFps) {
+  <div class="fps-counter" aria-live="polite">
+    <div>{{ rafFps() }} rAF</div>
+    <div class="fps-draw">{{ drawFps() }} draw</div>
+  </div>
+  }
+  @if (usesJoystick) {
+  <app-player [screenX]="playerScreenX()" [screenY]="playerScreenY()" [cameraBearingDeg]="followBearing"
+    [visible]="playerVisible()" />
+  <app-joystick [radiusPx]="joystickRadiusPx" (vectorChange)="onJoystickVector($event)" />
+  }
+</div>

@@ -1,0 +1,11 @@
+@if (active()) {
+  <div
+    class="base"
+    [style.left.px]="originX()"
+    [style.top.px]="originY()"
+    [style.width.px]="diameterPx()"
+    [style.height.px]="diameterPx()"
+  >
+    <div class="nipple" [style.transform]="nippleTransform()"></div>
+  </div>
+}
