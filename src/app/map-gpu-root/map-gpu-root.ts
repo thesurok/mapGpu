@@ -61,6 +61,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     if (this.showFps && event && Number.isFinite(event.fps)) {
       this.drawFps.set(Math.round(event.fps));
     }
+    this.syncCloudPlayerProximity();
     if (!this.usesJoystick) {
       return;
     }
@@ -68,6 +69,22 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     // player share the same lon/lat for this draw. Only project the marker here.
     this.syncPlayerScreen();
   };
+
+  /** Feed player lon/lat into compute clouds so wave amplitude can fall off nearby. */
+  private syncCloudPlayerProximity(): void {
+    if (this.computeClouds.length === 0) {
+      return;
+    }
+    const player = this.playerRef();
+    if (!player) {
+      return;
+    }
+    const longitude = player.longitude();
+    const latitude = player.latitude();
+    for (const cloud of this.computeClouds) {
+      cloud.setPlayerLonLat(longitude, latitude);
+    }
+  }
 
   async ngAfterViewInit(): Promise<void> {
     this.initMapGpu();
@@ -79,9 +96,8 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     if (this.showFps) {
       this.startFpsSampler();
     }
-    if (this.usesJoystick || this.showFps) {
-      this.mapView.on('frame', this.onFrame);
-    }
+    // Frame hook needed for FPS, joystick marker projection, and cloud proximity.
+    this.mapView.on('frame', this.onFrame);
     if (this.usesJoystick) {
       this.installJoystickRenderKeepAlive();
       const [longitude, latitude] = appConfigSettings.controls.joystick.playerStart;
@@ -90,6 +106,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
       this.syncPlayerScreen();
     }
     await this.addFigurinePointClouds();
+    this.syncCloudPlayerProximity();
   }
 
   /**
@@ -187,9 +204,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     if (appConfigSettings.debug.logClickCoordinates) {
       this.mapView?.off('click', this.onDebugClick);
     }
-    if (this.usesJoystick || this.showFps) {
-      this.mapView?.off('frame', this.onFrame);
-    }
+    this.mapView?.off('frame', this.onFrame);
     if (this.usesJoystick) {
       this.mapView?.unlockCamera();
     }
@@ -290,7 +305,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     const anchorLon = 22.295;
     const anchorLat = 48.623;
     const [originX, originY] = lonLatToMercator(anchorLon, anchorLat);
-    const scale = 120;
+    const scale = 60;
     const flatHeightCompensation = 2 * Math.PI;
 
     let minZ = Infinity;

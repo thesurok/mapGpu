@@ -10,7 +10,17 @@ const FLOATS_PER_REST = 8;
 const FLOATS_PER_OUT = 4;
 const WORKGROUP_SIZE = 64;
 /** Slow yaw around the figurine up-axis (radians / second). ~one turn / 50s. */
-const YAW_RAD_PER_SEC = 0.125;
+const YAW_RAD_PER_SEC = 0.525;
+/** Inside this ground distance (m) wave amplitude is nearly zero. */
+const WAVE_CALM_RADIUS_M = 28;
+/** Outside this ground distance (m) wave amplitude is full. */
+const WAVE_FULL_RADIUS_M = 140;
+/** Floor so the cloud never looks completely dead (still a tiny shimmer). */
+const WAVE_MIN_AMPLITUDE_SCALE = 0.03;
+/** Screen-space point size when the wave is fully active (player far). */
+const POINT_SIZE_FAR_PX = 1.0;
+/** Screen-space point size when the cloud is calm (player near). */
+const POINT_SIZE_NEAR_PX = 6.0;
 
 // GPUBufferUsage flags (numeric — @webgpu/types not in this project)
 const USAGE_COPY_DST = 0x0008;
@@ -39,6 +49,8 @@ interface PainterJson {
  *   2. 'frame' event → compute dispatch updates `outBuffer` for next frame
  *
  * Animation: vertical sine wave + slow rotation around the anchor up-axis.
+ * Wave amplitude falls off as the player approaches each point (almost static nearby);
+ * point sprites grow as the wave calms.
  */
 export class ComputePointCloud {
   private readonly device: GPUDevice;
@@ -49,9 +61,13 @@ export class ComputePointCloud {
   private paramsBuffer: GPUBuffer | null = null;
   private computePipeline: GPUComputePipeline | null = null;
   private computeBindGroup: GPUBindGroup | null = null;
-  private paramsData = new Float32Array(4);
+  /** time, count, originXY, playerXY, calmRadius, fullRadius */
+  private paramsData = new Float32Array(8);
   private originX = 0;
   private originY = 0;
+  /** Player ground position in EPSG:3857 metres; far away until set. */
+  private playerX = 1e12;
+  private playerY = 1e12;
   private pointCount = 0;
   private frameHandler: ((e: { frameNumber: number; fps: number }) => void) | null = null;
   private startTime = performance.now() / 1000;
@@ -147,7 +163,7 @@ export class ComputePointCloud {
 
     this.paramsBuffer = this.device.createBuffer({
       label: 'point-cloud-sim-params',
-      size: 16,
+      size: 32, // 8 × f32
       usage: USAGE_UNIFORM | USAGE_COPY_DST,
     });
 
@@ -180,6 +196,8 @@ export class ComputePointCloud {
       vertexCount: 6,
       instanceCount: this.pointCount,
     });
+    // Must set before first draw so the custom-uniform pipeline layout is created.
+    this.syncRenderProximityUniforms();
 
     // Prime once so first painted frame is already animated.
     this.dispatch(0);
@@ -220,6 +238,12 @@ export class ComputePointCloud {
         },
       },
       vertexShader: /* wgsl */ `
+struct CustomUniforms {
+  playerXY: vec2<f32>,
+  calmRadius: f32,
+  fullRadius: f32,
+};
+
 struct VertexInput {
   @location(0) data: vec4<f32>, // xyz = live position, w = heightT
 };
@@ -231,7 +255,8 @@ struct VertexOutput {
 };
 
 const EARTH_RADIUS_M: f32 = 6378137.0;
-const POINT_SIZE: f32 = 1.5;
+const POINT_SIZE_FAR: f32 = ${POINT_SIZE_FAR_PX};
+const POINT_SIZE_NEAR: f32 = ${POINT_SIZE_NEAR_PX};
 
 fn projectPoint(pos: vec3<f32>) -> vec4<f32> {
   let merc01 = _epsg3857ToMerc01(pos.xy);
@@ -262,9 +287,14 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
     vec2<f32>( 0.5,  0.5),
   );
 
+  // Same falloff as compute wave damping: near player → larger, calmer points.
+  let dist = length(input.data.xy - custom.playerXY);
+  let nearness = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let pointSize = mix(POINT_SIZE_FAR, POINT_SIZE_NEAR, nearness);
+
   let offset = quadOffsets[vid];
   let clipCenter = projectPoint(input.data.xyz);
-  let screenOffset = offset * POINT_SIZE;
+  let screenOffset = offset * pointSize;
   let ndcOffset = vec2<f32>(
     screenOffset.x * 2.0 / camera.viewport.x,
     screenOffset.y * 2.0 / camera.viewport.y,
@@ -298,6 +328,24 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     });
   }
 
+  /** Update the player ground position used to damp wave amplitude / grow points. */
+  setPlayerLonLat(longitude: number, latitude: number): void {
+    const [x, y] = lonLatToMercator(longitude, latitude);
+    this.playerX = x;
+    this.playerY = y;
+  }
+
+  private syncRenderProximityUniforms(): void {
+    this.layer?.setCustomUniforms(
+      new Float32Array([
+        this.playerX,
+        this.playerY,
+        WAVE_CALM_RADIUS_M,
+        WAVE_FULL_RADIUS_M,
+      ]),
+    );
+  }
+
   /** Run compute: rest + time → outBuffer (VERTEX|STORAGE). */
   dispatch(timeSeconds: number): void {
     if (
@@ -313,7 +361,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     this.paramsData[1] = this.pointCount;
     this.paramsData[2] = this.originX;
     this.paramsData[3] = this.originY;
+    this.paramsData[4] = this.playerX;
+    this.paramsData[5] = this.playerY;
+    this.paramsData[6] = WAVE_CALM_RADIUS_M;
+    this.paramsData[7] = WAVE_FULL_RADIUS_M;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsData);
+    this.syncRenderProximityUniforms();
 
     const encoder = this.device.createCommandEncoder({
       label: 'point-cloud-compute-encoder',
@@ -361,6 +414,10 @@ struct SimParams {
   count: f32,
   originX: f32,
   originY: f32,
+  playerX: f32,
+  playerY: f32,
+  calmRadius: f32,
+  fullRadius: f32,
 };
 
 @group(0) @binding(0) var<storage, read> restParticles: array<RestParticle>;
@@ -369,6 +426,7 @@ struct SimParams {
 
 const TWO_PI: f32 = 6.28318530718;
 const YAW_RAD_PER_SEC: f32 = ${YAW_RAD_PER_SEC};
+const MIN_AMP_SCALE: f32 = ${WAVE_MIN_AMPLITUDE_SCALE};
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -393,7 +451,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     params.originY + dx * s + dy * c,
     p.rest.z,
   );
-  pos.z += sin(params.time * (TWO_PI / wavelength) + p.wave.x) * p.wave.y;
+
+  // Dampen vertical wave as the player nears this point (ground distance).
+  let toPlayer = pos.xy - vec2<f32>(params.playerX, params.playerY);
+  let dist = length(toPlayer);
+  let ampScale = mix(
+    MIN_AMP_SCALE,
+    1.0,
+    smoothstep(params.calmRadius, params.fullRadius, dist),
+  );
+  pos.z += sin(params.time * (TWO_PI / wavelength) + p.wave.x) * p.wave.y * ampScale;
 
   // w carries normalized rest height for the fragment gradient
   outPositions[i] = vec4<f32>(pos, p.wave.z);
