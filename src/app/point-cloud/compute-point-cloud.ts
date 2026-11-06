@@ -3,24 +3,20 @@ import { lonLatToMercator } from 'mapgpu/core';
 import type { MapView } from 'mapgpu/core';
 import type { RenderEngine } from 'mapgpu/render';
 import { WGSLLayer } from 'mapgpu/layers';
+import {
+  POINT_SIZE_FAR_PX,
+  POINT_SIZE_NEAR_PX,
+  WAVE_CALM_RADIUS_M,
+  WAVE_FULL_RADIUS_M,
+  WAVE_MIN_AMPLITUDE_SCALE,
+  YAW_RAD_PER_SEC,
+} from './figurine-cloud-anim';
 
 /** One rest particle: rest.xyz + wavelength, phase + amplitude + heightT + pad. */
 const FLOATS_PER_REST = 8;
 /** Animated output: xyz + heightT (for gradient). */
 const FLOATS_PER_OUT = 4;
 const WORKGROUP_SIZE = 64;
-/** Slow yaw around the figurine up-axis (radians / second). ~one turn / 50s. */
-const YAW_RAD_PER_SEC = 0.525;
-/** Inside this ground distance (m) wave amplitude is nearly zero. */
-const WAVE_CALM_RADIUS_M = 28;
-/** Outside this ground distance (m) wave amplitude is full. */
-const WAVE_FULL_RADIUS_M = 140;
-/** Floor so the cloud never looks completely dead (still a tiny shimmer). */
-const WAVE_MIN_AMPLITUDE_SCALE = 0.03;
-/** Screen-space point size when the wave is fully active (player far). */
-const POINT_SIZE_FAR_PX = 1.0;
-/** Screen-space point size when the cloud is calm (player near). */
-const POINT_SIZE_NEAR_PX = 6.0;
 
 // GPUBufferUsage flags (numeric — @webgpu/types not in this project)
 const USAGE_COPY_DST = 0x0008;
@@ -316,13 +312,16 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let centered = input.uv - vec2<f32>(0.5, 0.5);
-  if (length(centered) > 0.5) {
+  let dist = length(centered);
+  // Soft edge (no hard discard) — hard circles + depth fighting read as vertical stripes.
+  let alpha = smoothstep(0.5, 0.35, dist);
+  if (alpha <= 0.001) {
     discard;
   }
   let bottom = vec3<f32>(0.25, 0.08, 0.55);
   let top = vec3<f32>(0.90, 0.72, 1.0);
   let rgb = mix(bottom, top, clamp(input.heightT, 0.0, 1.0));
-  return vec4<f32>(rgb, 0.92 * frame.opacity);
+  return vec4<f32>(rgb, 0.92 * alpha * frame.opacity);
 }
 `,
     });

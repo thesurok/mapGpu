@@ -38,15 +38,18 @@ index 1c0e471..18763dc 100644
          });
          this.resizeObserver.observe(container);
 diff --git a/node_modules/mapgpu/dist/render/draw-delegate-custom.js b/node_modules/mapgpu/dist/render/draw-delegate-custom.js
-index a4ba262..d8c6332 100644
+index a4ba262..caf0693 100644
 --- a/node_modules/mapgpu/dist/render/draw-delegate-custom.js
 +++ b/node_modules/mapgpu/dist/render/draw-delegate-custom.js
-@@ -41,6 +41,8 @@ export class DrawDelegateCustom {
+@@ -41,6 +41,11 @@ export class DrawDelegateCustom {
                      device: this.ctx.device,
                      colorFormat: this.ctx.colorFormat,
                      depthFormat: this.ctx.depthConfig.format,
 +                    depthCompare: this.ctx.depthConfig.compareFunc,
-+                    depthWriteEnabled: true,
++                    // Blended point sprites must not write depth or large overlapping
++                    // quads carve stripy holes in each other (draw-order fighting).
++                    // Depth *test* still runs so opaque geometry (buildings) occludes them.
++                    depthWriteEnabled: call.depthWriteEnabled ?? false,
                      cameraBindGroupLayout: camLayout,
                      shaderSource: call.shaderSource,
                      vertexBufferLayouts: call.vertexBufferLayouts,
@@ -66,10 +69,10 @@ index ec9e42a..364f6c7 100644
      shaderSource: string;
      vertexBufferLayouts: CustomVertexBufferLayout[];
 diff --git a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
-index 7ed1c1e..d0834f2 100644
+index 7ed1c1e..ec91a83 100644
 --- a/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
 +++ b/node_modules/mapgpu/dist/render/pipelines/custom-pipeline.js
-@@ -159,18 +159,10 @@ export function createCustomPipeline(desc) {
+@@ -159,18 +159,11 @@ export function createCustomPipeline(desc) {
              operation: 'add',
          },
      };
@@ -88,11 +91,12 @@ index 7ed1c1e..d0834f2 100644
 +    // Depth must follow the active MapView mode (3D uses reverse-Z → 'greater').
 +    // Previous always/no-write made custom point clouds look flat and ignore buildings.
 +    const depthCompare = desc.depthCompare ?? 'less';
-+    const depthWriteEnabled = desc.depthWriteEnabled ?? true;
++    // Default false: custom layers are often blended particles/overlays.
++    const depthWriteEnabled = desc.depthWriteEnabled ?? false;
      // Create pipeline
      const pipeline = device.createRenderPipeline({
          label: 'custom-render-pipeline',
-@@ -195,8 +187,8 @@ export function createCustomPipeline(desc) {
+@@ -195,8 +188,8 @@ export function createCustomPipeline(desc) {
          },
          depthStencil: {
              format: depthFormat,

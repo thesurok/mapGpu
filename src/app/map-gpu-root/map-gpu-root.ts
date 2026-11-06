@@ -7,9 +7,22 @@ import { Joystick } from '../joystick/joystick';
 import { type JoystickVector } from '../movement/ground-movement';
 import { Player } from '../player/player';
 import { ComputePointCloud } from '../point-cloud/compute-point-cloud';
+import {
+  POINT_SIZE_FAR_PX,
+  POINT_SIZE_NEAR_PX,
+  WAVE_CALM_RADIUS_M,
+  WAVE_FULL_RADIUS_M,
+  WAVE_MIN_AMPLITUDE_SCALE,
+  YAW_RAD_PER_SEC,
+} from '../point-cloud/figurine-cloud-anim';
 
-/** Extensible layer backend for figurine point clouds. Add new kinds as support lands. */
 export type FigurinePointCloudLayer = 'wgsl' | 'compute';
+
+interface WgslFigurineCloud {
+  layer: WGSLLayer;
+  originX: number;
+  originY: number;
+}
 
 @Component({
   selector: 'app-map-gpu-root',
@@ -22,7 +35,6 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   private readonly mapGpuContainer!: ElementRef<HTMLDivElement>;
   private readonly playerRef = viewChild(Player);
 
-  /** True when config selects the joystick player instead of map pan/zoom. */
   readonly usesJoystick = appConfigSettings.controls.mode === 'joystick';
   readonly showFps = appConfigSettings.debug.showFps;
   readonly joystickRadiusPx = appConfigSettings.controls.joystick.radiusPx;
@@ -30,9 +42,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   readonly playerScreenX = signal(0);
   readonly playerScreenY = signal(0);
   readonly playerVisible = signal(false);
-  /** Browser animation-frame rate (independent of MapView dirty checks). */
   readonly rafFps = signal(0);
-  /** MapView dirty-render rate; ~0 when the map is idle/static. */
   readonly drawFps = signal(0);
 
   private mapView!: MapView;
@@ -40,7 +50,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   private lastFrameMs: number | null = null;
   private renderEngine!: RenderEngine;
   private readonly computeClouds: ComputePointCloud[] = [];
-  /** Animated no-op layer so MapView stays dirty without figurine clouds. */
+  private readonly wgslClouds: WgslFigurineCloud[] = [];
   private joystickKeepAliveLayer: WGSLLayer | null = null;
   private fpsRafId: number | null = null;
   private fpsFrames = 0;
@@ -65,14 +75,12 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     if (!this.usesJoystick) {
       return;
     }
-    // Motion advances in lockCamera getTarget (pre-frame) so the camera and
-    // player share the same lon/lat for this draw. Only project the marker here.
+
     this.syncPlayerScreen();
   };
 
-  /** Feed player lon/lat into compute clouds so wave amplitude can fall off nearby. */
   private syncCloudPlayerProximity(): void {
-    if (this.computeClouds.length === 0) {
+    if (this.computeClouds.length === 0 && this.wgslClouds.length === 0) {
       return;
     }
     const player = this.playerRef();
@@ -84,19 +92,31 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     for (const cloud of this.computeClouds) {
       cloud.setPlayerLonLat(longitude, latitude);
     }
+    const [playerX, playerY] = lonLatToMercator(longitude, latitude);
+    for (const cloud of this.wgslClouds) {
+      cloud.layer.setCustomUniforms(
+        new Float32Array([
+          cloud.originX,
+          cloud.originY,
+          playerX,
+          playerY,
+          WAVE_CALM_RADIUS_M,
+          WAVE_FULL_RADIUS_M,
+          YAW_RAD_PER_SEC,
+          0,
+        ]),
+      );
+    }
   }
 
   async ngAfterViewInit(): Promise<void> {
     this.initMapGpu();
     await this.mapView.when();
-    // Ensure Mode3D frustum matches the laid-out container (ResizeObserver
-    // used to skip onResize when the canvas backing store already matched,
-    // which left buildings missing until a DevTools-driven resize).
+
     this.nudgeMapViewportSync();
     if (this.showFps) {
       this.startFpsSampler();
     }
-    // Frame hook needed for FPS, joystick marker projection, and cloud proximity.
     this.mapView.on('frame', this.onFrame);
     if (this.usesJoystick) {
       this.installJoystickRenderKeepAlive();
@@ -109,10 +129,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     this.syncCloudPlayerProximity();
   }
 
-  /**
-   * rAF-based sampler so the overlay keeps updating on a static MapView
-   * (dirty-checking correctly stops emitting `frame` when nothing changes).
-   */
+
   private startFpsSampler(): void {
     if (this.fpsRafId !== null) {
       return;
@@ -140,11 +157,6 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     this.fpsRafId = null;
   }
 
-  /**
-   * Figurines' `animated: true` WGSL layers mark the render loop dirty every
-   * pre-frame. Without them the loop idles and joystick `lockCamera` stepping
-   * never runs. This invisible animated layer restores that heartbeat.
-   */
   private installJoystickRenderKeepAlive(): void {
     if (this.joystickKeepAliveLayer) {
       return;
@@ -157,14 +169,14 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
         arrayStride: 8,
         attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }],
       }],
-      vertexShader: /* wgsl */ `
+      vertexShader: `
 @vertex
 fn vs_main() -> @builtin(position) vec4<f32> {
   // Off-screen; draw count is 0 anyway.
   return vec4<f32>(2.0, 2.0, 0.0, 1.0);
 }
 `,
-      fragmentShader: /* wgsl */ `
+      fragmentShader: `
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
   return vec4<f32>(0.0);
@@ -176,14 +188,12 @@ fn fs_main() -> @location(0) vec4<f32> {
     this.joystickKeepAliveLayer = layer;
   }
 
-  /** Force MapView's ResizeObserver path so tile covering uses the real viewport. */
   private nudgeMapViewportSync(): void {
     const container = this.mapGpuContainer.nativeElement;
     if (container.clientWidth <= 0 || container.clientHeight <= 0) {
       return;
     }
     const prev = container.style.width;
-    // 1px toggle is enough for ResizeObserver; restored next frame.
     container.style.width = `${container.clientWidth - 1}px`;
     requestAnimationFrame(() => {
       container.style.width = prev;
@@ -195,7 +205,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     for (const figurine of Object.keys(fogurinesData)) {
       const data = fogurinesData[figurine];
       console.log(data);
-      await this.drawFigurinePointCloud(figurine, data.longitude, data.latitude, 'compute');
+      await this.drawFigurinePointCloud(figurine, data.longitude, data.latitude, 'wgsl');
     }
   }
 
@@ -216,6 +226,10 @@ fn fs_main() -> @location(0) vec4<f32> {
       cloud.destroy();
     }
     this.computeClouds.length = 0;
+    for (const cloud of this.wgslClouds) {
+      this.mapView?.map.remove(cloud.layer);
+    }
+    this.wgslClouds.length = 0;
   }
 
   onJoystickVector(vector: JoystickVector): void {
@@ -387,18 +401,19 @@ fn fs_main() -> @location(0) vec4<f32> {
     latitude: number,
   ): Promise<void> {
     const mapView = this.mapView;
-
+    const [originX, originY] = lonLatToMercator(longitude, latitude);
 
     const layer = new WGSLLayer({
       id: `${pointsJsonName}-cloud-wgsl`,
       animated: true,
       topology: 'triangle-list',
       vertexBufferLayouts: [{
-        arrayStride: 24, // rest.xyz + wave(wavelength, phase, amplitude)
+        arrayStride: 32,
         stepMode: 'instance',
         attributes: [
           { shaderLocation: 0, offset: 0, format: 'float32x3' },
           { shaderLocation: 1, offset: 12, format: 'float32x3' },
+          { shaderLocation: 2, offset: 24, format: 'float32' },
         ],
       }],
       blendState: {
@@ -414,20 +429,33 @@ fn fs_main() -> @location(0) vec4<f32> {
         },
       },
       vertexShader: `
+struct CustomUniforms {
+  originXY: vec2<f32>,
+  playerXY: vec2<f32>,
+  calmRadius: f32,
+  fullRadius: f32,
+  yawRadPerSec: f32,
+  _pad: f32,
+};
+
 struct VertexInput {
   @location(0) position: vec3<f32>,
   // x = wavelength/period (seconds), y = phase (rad), z = amplitude (metres)
   @location(1) wave: vec3<f32>,
+  @location(2) heightT: f32,
 };
 
 struct VertexOutput {
   @builtin(position) clipPosition: vec4<f32>,
-  @location(0) uv: vec2<f32>,
+  @location(0) heightT: f32,
+  @location(1) uv: vec2<f32>,
 };
 
 const EARTH_RADIUS_M: f32 = 6378137.0;
-const POINT_SIZE: f32 = 1.0;
 const TWO_PI: f32 = 6.28318530718;
+const POINT_SIZE_FAR: f32 = ${POINT_SIZE_FAR_PX};
+const POINT_SIZE_NEAR: f32 = ${POINT_SIZE_NEAR_PX};
+const MIN_AMP_SCALE: f32 = ${WAVE_MIN_AMPLITUDE_SCALE};
 
 fn projectPoint(pos: vec3<f32>) -> vec4<f32> {
   let merc01 = _epsg3857ToMerc01(pos.xy);
@@ -459,16 +487,31 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
     vec2<f32>( 0.5,  0.5),
   );
 
-  // GPU sine: rest pose stays on GPU; only frame.time changes each frame.
+  // Slow spin around the figurine up-axis (through the anchor).
+  let angle = frame.time * custom.yawRadPerSec;
+  let c = cos(angle);
+  let s = sin(angle);
+  let dx = input.position.x - custom.originXY.x;
+  let dy = input.position.y - custom.originXY.y;
+  var animatedPos = vec3<f32>(
+    custom.originXY.x + dx * c - dy * s,
+    custom.originXY.y + dx * s + dy * c,
+    input.position.z,
+  );
+
+  // Dampen vertical wave as the player nears this point; grow sprite size.
+  let dist = length(animatedPos.xy - custom.playerXY);
+  let nearness = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let ampScale = mix(1.0, MIN_AMP_SCALE, nearness);
+  let pointSize = mix(POINT_SIZE_FAR, POINT_SIZE_NEAR, nearness);
+
   let wavelength = max(input.wave.x, 0.05);
-  let phase = input.wave.y;
-  let amplitude = input.wave.z;
-  var animatedPos = input.position;
-  animatedPos.z += sin(frame.time * (TWO_PI / wavelength) + phase) * amplitude;
+  animatedPos.z += sin(frame.time * (TWO_PI / wavelength) + input.wave.y)
+    * input.wave.z * ampScale;
 
   let offset = quadOffsets[vid];
   let clipCenter = projectPoint(animatedPos);
-  let screenOffset = offset * POINT_SIZE;
+  let screenOffset = offset * pointSize;
   let ndcOffset = vec2<f32>(
     screenOffset.x * 2.0 / camera.viewport.x,
     screenOffset.y * 2.0 / camera.viewport.y,
@@ -481,6 +524,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
     clipCenter.z,
     clipCenter.w,
   );
+  out.heightT = input.heightT;
   out.uv = offset + vec2<f32>(0.5, 0.5);
   return out;
 }
@@ -490,11 +534,14 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let centered = input.uv - vec2<f32>(0.5, 0.5);
   let dist = length(centered);
-  if (dist > 0.5) {
+  let alpha = smoothstep(0.5, 0.35, dist);
+  if (alpha <= 0.001) {
     discard;
   }
-  let color = vec4<f32>(188.0 / 255.0, 140.0 / 255.0, 255.0 / 255.0, 220.0 / 255.0);
-  return vec4<f32>(color.rgb, color.a * frame.opacity);
+  let bottom = vec3<f32>(0.25, 0.08, 0.55);
+  let top = vec3<f32>(0.90, 0.72, 1.0);
+  let rgb = mix(bottom, top, clamp(input.heightT, 0.0, 1.0));
+  return vec4<f32>(rgb, 0.92 * alpha * frame.opacity);
 }
 `,
     });
@@ -502,33 +549,50 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     mapView.map.add(layer);
     await mapView.when();
 
+    // Seed custom uniforms before first draw so the pipeline includes @group(2).
+    layer.setCustomUniforms(
+      new Float32Array([
+        originX,
+        originY,
+        1e12,
+        1e12,
+        WAVE_CALM_RADIUS_M,
+        WAVE_FULL_RADIUS_M,
+        YAW_RAD_PER_SEC,
+        0,
+      ]),
+    );
+
     const jsonName = pointsJsonName.endsWith('.json')
       ? pointsJsonName
       : `${pointsJsonName}.json`;
     const data = await fetch(`/data/json/point-clouds/${jsonName}`).then(r => r.json());
-    const [originX, originY] = lonLatToMercator(longitude, latitude);
-    const scale = 120;
+    const scale = 100;
     const flatHeightCompensation = 2 * Math.PI;
 
     let minZ = Infinity;
+    let maxZ = -Infinity;
     for (const p of data.points) {
-      if (p.z < minZ) minZ = p.z;
+      minZ = Math.min(minZ, p.z);
+      maxZ = Math.max(maxZ, p.z);
     }
+    const zSpan = Math.max(maxZ - minZ, 1e-6);
 
-    // Interleaved: rest.xyz, wavelength (s), phase (rad), amplitude (m) — uploaded once.
-    const instances = new Float32Array(data.points.length * 6);
+    // Interleaved: rest.xyz, wavelength, phase, amplitude, heightT, pad — uploaded once.
+    const instances = new Float32Array(data.points.length * 8);
     for (let i = 0; i < data.points.length; i++) {
       const p = data.points[i];
-      const base = i * 6;
+      const base = i * 8;
       instances[base] = originX + p.x * scale;
       instances[base + 1] = originY + p.y * scale;
       instances[base + 2] = ((p.z - minZ) * scale) / flatHeightCompensation;
 
-      // Stable per-point params from Blender coords (different wavelengths across the cloud).
       const hash = Math.abs(Math.sin(p.x * 12.9898 + p.y * 78.233 + p.z * 37.719));
-      instances[base + 3] = 0.7 + hash * 2.8;           // wavelength / period: ~0.7–3.5 s
+      instances[base + 3] = 0.7 + hash * 2.8;           // wavelength / period
       instances[base + 4] = (p.x + p.y * 2.0 + p.z) * 8; // phase
-      instances[base + 5] = 1.2 + hash * 2.8;             // amplitude in stored height units
+      instances[base + 5] = 1.2 + hash * 2.8;             // amplitude
+      instances[base + 6] = (p.z - minZ) / zSpan;         // heightT gradient
+      instances[base + 7] = 0;
     }
 
     // VERTEX | COPY_DST — uploaded once; animation does not rewrite this buffer.
@@ -538,6 +602,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       vertexCount: 6,
       instanceCount: data.points.length,
     });
+    this.wgslClouds.push({ layer, originX, originY });
     layer.requestRender();
   }
 
@@ -561,11 +626,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     });
   }
 
-  /**
-   * Advance the player from the latest nipple vector.
-   * Mapping lives in `ground-movement.ts`. Screen projection is separate
-   * (`syncPlayerScreen`) so it can run after the camera has locked.
-   */
   private advancePlayerFromJoystick(): void {
     const now = performance.now();
     const previous = this.lastFrameMs;
@@ -582,7 +642,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
   }
 
-  /** `toScreen` is the 3D ground point projected into the 2D overlay. */
   private syncPlayerScreen(): void {
     const player = this.playerRef();
     if (!player || !this.mapView) {
