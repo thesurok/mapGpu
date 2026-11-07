@@ -6,6 +6,7 @@ import { Component } from '@angular/core';
   templateUrl: './figurine-icon.html',
   styleUrl: './figurine-icon.css',
 })
+
 export class FigurineIcon {
 
 }

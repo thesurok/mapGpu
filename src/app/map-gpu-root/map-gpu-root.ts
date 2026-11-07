@@ -54,6 +54,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   private joystickKeepAliveLayer: WGSLLayer | null = null;
   private fpsRafId: number | null = null;
   private fpsFrames = 0;
+  private drawFrames = 0;
   private fpsWindowStartMs = 0;
   private readonly onDebugClick = ({
     mapPoint,
@@ -67,9 +68,11 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     console.log(`[debug] click coordinates: lon=${longitude}, lat=${latitude}`);
   };
 
-  private readonly onFrame = (event?: { frameNumber: number; fps: number }): void => {
-    if (this.showFps && event && Number.isFinite(event.fps)) {
-      this.drawFps.set(Math.round(event.fps));
+  private readonly onFrame = (): void => {
+    // Count real draw callbacks. mapgpu's own fps stays at the last value
+    // after the view goes clean, so a static map looked "capped".
+    if (this.showFps) {
+      this.drawFrames += 1;
     }
     this.syncCloudPlayerProximity();
     if (!this.usesJoystick) {
@@ -119,14 +122,14 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     }
     this.mapView.on('frame', this.onFrame);
     if (this.usesJoystick) {
-      this.installJoystickRenderKeepAlive();
-      const [longitude, latitude] = appConfigSettings.controls.joystick.playerStart;
-      this.playerRef()?.place(longitude, latitude);
-      this.lockFollowCamera();
-      this.syncPlayerScreen();
+      // this.installJoystickRenderKeepAlive();
+      // const [longitude, latitude] = appConfigSettings.controls.joystick.playerStart;
+      // this.playerRef()?.place(longitude, latitude);
+      // this.lockFollowCamera();
+      // this.syncPlayerScreen();
     }
     await this.addFigurinePointClouds();
-    this.syncCloudPlayerProximity();
+    // this.syncCloudPlayerProximity();
   }
 
 
@@ -135,13 +138,16 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
       return;
     }
     this.fpsFrames = 0;
+    this.drawFrames = 0;
     this.fpsWindowStartMs = performance.now();
     const tick = (now: number): void => {
       this.fpsFrames += 1;
       const elapsed = now - this.fpsWindowStartMs;
       if (elapsed >= 1000) {
         this.rafFps.set(Math.round((this.fpsFrames / elapsed) * 1000));
+        this.drawFps.set(Math.round((this.drawFrames / elapsed) * 1000));
         this.fpsFrames = 0;
+        this.drawFrames = 0;
         this.fpsWindowStartMs = now;
       }
       this.fpsRafId = requestAnimationFrame(tick);
@@ -201,12 +207,14 @@ fn fs_main() -> @location(0) vec4<f32> {
   }
 
   async addFigurinePointClouds(): Promise<void> {
-    const fogurinesData = await fetch('/data/figurines-data.json').then(r => r.json());
-    for (const figurine of Object.keys(fogurinesData)) {
-      const data = fogurinesData[figurine];
-      console.log(data);
-      await this.drawFigurinePointCloud(figurine, data.longitude, data.latitude, 'wgsl');
-    }
+    const figurinesData = await fetch('/data/figurines-data.json').then(r => r.json());
+    // for (const figurine of Object.keys(figurinesData)) {
+    //   const data = figurinesData[figurine];
+    //   console.log(data);
+    //   await this.drawFigurinePointCloud(figurine, data.longitude, data.latitude, 'wgsl');
+    // }
+    const sampleData = figurinesData["jon-lord"];
+    await this.drawFigurinePointCloudWgslDebug("jon-lord", sampleData.longitude, sampleData.latitude);
   }
 
   ngOnDestroy(): void {
@@ -393,6 +401,28 @@ fn fs_main() -> @location(0) vec4<f32> {
       },
     );
     this.computeClouds.push(cloud);
+  }
+
+  async drawFigurinePointCloudWgslDebug(pointsJsonName: string, longitude: number, latitude: number): Promise<void> {
+    console.log("drawFigurinePointCloudWgslDebug", pointsJsonName, longitude, latitude);
+    const [originX, originY] = lonLatToMercator(longitude, latitude);
+    const layer = new WGSLLayer({
+      id: "test-layer",
+      animated: false,
+      topology: 'triangle-list',
+      vertexBufferLayouts: [{
+        arrayStride: 12,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" }
+        ]
+      }],
+      vertexShader: `
+      `,
+      fragmentShader: `
+      `
+    });
+    this.mapView.map.add(layer);
+    await this.mapView.when();
   }
 
   private async drawFigurinePointCloudWgsl(

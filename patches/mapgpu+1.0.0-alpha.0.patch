@@ -20,10 +20,23 @@ index 42cb3c5..81e61de 100644
              });
              layer.on('visibility-change', () => {
 diff --git a/node_modules/mapgpu/dist/core/engine/ViewCore.js b/node_modules/mapgpu/dist/core/engine/ViewCore.js
-index 1c0e471..18763dc 100644
+index 1c0e471..a29155d 100644
 --- a/node_modules/mapgpu/dist/core/engine/ViewCore.js
 +++ b/node_modules/mapgpu/dist/core/engine/ViewCore.js
-@@ -274,8 +274,12 @@ export class ViewCore {
+@@ -186,7 +186,11 @@ export class ViewCore {
+         this.tileScheduler = new TileScheduler();
+         this.tileManager = new TileManager({ tileScheduler: this.tileScheduler });
+         this.terrainManager = new TerrainTileManager();
+-        this.renderLoop = new RenderLoop();
++        // 0 = follow the display. The default 60 cap is `delta < 1000/60`, which
++        // cannot land on a 165 Hz vsync (6.06 ms): Chromium waits 3 refreshes
++        // (~53 fps) and Firefox, whose rAF timestamps jitter under that line,
++        // waits longer (~27 fps). Dirty checking still skips unchanged frames.
++        this.renderLoop = new RenderLoop({ targetFps: 0 });
+         this.bufferCache = new VectorBufferCache();
+         this.workerRegistry = new WorkerPoolRegistry();
+     }
+@@ -274,8 +278,12 @@ export class ViewCore {
                  if (canvas.width !== pixelW || canvas.height !== pixelH) {
                      canvas.width = pixelW;
                      canvas.height = pixelH;
