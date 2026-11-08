@@ -40,7 +40,8 @@ export class FigurineCollection {
 
   private async fetchFigurines(): Promise<void> {
     try {
-      const response = await fetch('/data/figurines-data.json');
+      // Relative to <base href> so GitHub Pages project sites resolve under /mapGpu/.
+      const response = await fetch('data/figurines-data.json');
       if (!response.ok) {
         return;
       }

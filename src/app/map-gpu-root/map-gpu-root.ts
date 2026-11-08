@@ -349,7 +349,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     mapView.map.add(cloud);
     await mapView.when();
     cloud.attachRenderEngine(this.renderEngine);
-    const data = await fetch('/data/json/point-clouds/painter.json').then(r => r.json());
+    const data = await fetch('data/json/point-clouds/painter.json').then(r => r.json());
     const anchorLon = 22.295;
     const anchorLat = 48.623;
     const [originX, originY] = lonLatToMercator(anchorLon, anchorLat);
@@ -376,7 +376,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     const cloud = await ComputePointCloud.create(
       this.mapView,
       this.renderEngine,
-      '/data/json/point-clouds/painter.json',
+      'data/json/point-clouds/painter.json',
       {
         id: 'painter-cloud-compute',
         anchorLon: 22.2969,
@@ -418,7 +418,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     const cloud = await ComputePointCloud.create(
       this.mapView,
       this.renderEngine,
-      `/data/json/point-clouds/${jsonName}`,
+      `data/json/point-clouds/${jsonName}`,
       {
         id: `${pointsJsonName}-cloud-compute`,
         figurineId: pointsJsonName,
@@ -614,7 +614,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     const jsonName = pointsJsonName.endsWith('.json')
       ? pointsJsonName
       : `${pointsJsonName}.json`;
-    const data = await fetch(`/data/json/point-clouds/${jsonName}`).then(r => r.json());
+    const data = await fetch(`data/json/point-clouds/${jsonName}`).then(r => r.json());
     const scale = 100;
     const flatHeightCompensation = 2 * Math.PI;
 

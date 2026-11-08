@@ -25,12 +25,12 @@ describe('FigurineIcon', () => {
     fixture.componentRef.setInput('collected', false);
     fixture.detectChanges();
     const img: HTMLImageElement = fixture.nativeElement.querySelector('img');
-    expect(img.getAttribute('src')).toBe('/figurine-icons/jon-lord-empty.webp');
+    expect(img.getAttribute('src')).toBe('figurine-icons/jon-lord-empty.webp');
     expect(img.alt).toBe('Jon Lord, not collected');
 
     fixture.componentRef.setInput('collected', true);
     fixture.detectChanges();
-    expect(img.getAttribute('src')).toBe('/figurine-icons/jon-lord-full.webp');
+    expect(img.getAttribute('src')).toBe('figurine-icons/jon-lord-full.webp');
     expect(img.alt).toBe('Jon Lord, collected');
   });
 });

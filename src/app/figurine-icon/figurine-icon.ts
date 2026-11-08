@@ -15,7 +15,7 @@ export class FigurineIcon {
   readonly collected = input(false);
 
   readonly src = computed(
-    () => `/figurine-icons/${this.name()}-${this.collected() ? 'full' : 'empty'}.webp`,
+    () => `figurine-icons/${this.name()}-${this.collected() ? 'full' : 'empty'}.webp`,
   );
 
   readonly label = computed(() => {
