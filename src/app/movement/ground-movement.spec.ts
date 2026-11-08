@@ -1,4 +1,4 @@
-import { joystickToEastNorth, offsetLonLat } from './ground-movement';
+import { eastNorthBetween, joystickToEastNorth, offsetLonLat } from './ground-movement';
 
 describe('joystickToEastNorth', () => {
   it('maps stick-up to north when the camera faces north', () => {
@@ -23,6 +23,22 @@ describe('joystickToEastNorth', () => {
     const { east, north } = joystickToEastNorth({ x: 0, y: 0.5 }, 0);
     expect(Math.hypot(east, north)).toBeCloseTo(0.5);
     expect(north).toBeCloseTo(-0.5);
+  });
+});
+
+describe('eastNorthBetween', () => {
+  it('measures a northward offset in ground metres', () => {
+    const { east, north } = eastNorthBetween(22.3, 48.62, 22.3, 48.62 + 100 / ((Math.PI / 180) * 6378137));
+    expect(east).toBeCloseTo(0, 4);
+    expect(north).toBeCloseTo(100, 3);
+  });
+
+  it('measures an eastward offset with the local longitude scale', () => {
+    const latitude = 48.62;
+    const metersPerDegLon = ((Math.PI / 180) * 6378137) * Math.cos((latitude * Math.PI) / 180);
+    const { east, north } = eastNorthBetween(22.3, latitude, 22.3 + 80 / metersPerDegLon, latitude);
+    expect(east).toBeCloseTo(80, 3);
+    expect(north).toBeCloseTo(0, 4);
   });
 });
 

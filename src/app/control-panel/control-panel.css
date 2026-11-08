@@ -1,0 +1,12 @@
+:host {
+  position: fixed;
+  z-index: 20;
+  top: 12px;
+  left: 12px;
+  pointer-events: none;
+}
+
+.panel {
+  display: flex;
+  gap: 8px;
+}

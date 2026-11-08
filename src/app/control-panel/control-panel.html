@@ -1,1 +1,8 @@
-<p>control-panel works!</p>
+<section class="panel" aria-label="Figurines">
+  @for (figurine of collection.figurines(); track figurine.id) {
+    <app-figurine-icon
+      [name]="figurine.id"
+      [collected]="collection.collected().has(figurine.id)"
+    />
+  }
+</section>

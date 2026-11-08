@@ -58,6 +58,23 @@ export function joystickToEastNorth(vector: JoystickVector, bearingDeg: number):
  * larger longitude change toward the poles. Latitude is clamped to the Web
  * Mercator limit the map itself can display.
  */
+/**
+ * Ground metres from one geographic point to another.
+ * East and north use the same degree lengths as `offsetLonLat`.
+ */
+export function eastNorthBetween(
+  fromLongitude: number,
+  fromLatitude: number,
+  toLongitude: number,
+  toLatitude: number,
+): EastNorthMeters {
+  const metersPerDegLon = METERS_PER_DEG_LAT * Math.cos(degreesToRadians(fromLatitude));
+  return {
+    east: (toLongitude - fromLongitude) * metersPerDegLon,
+    north: (toLatitude - fromLatitude) * METERS_PER_DEG_LAT,
+  };
+}
+
 export function offsetLonLat(
   longitude: number,
   latitude: number,

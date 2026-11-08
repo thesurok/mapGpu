@@ -1,4 +1,4 @@
-import { Component, type ElementRef, AfterViewInit, OnDestroy, ViewChild, signal, viewChild } from '@angular/core';
+import { Component, type ElementRef, AfterViewInit, OnDestroy, ViewChild, inject, signal, viewChild } from '@angular/core';
 import { MapView, SimpleRenderer, lonLatToMercator } from "mapgpu/core";
 import { RenderEngine } from "mapgpu/render";
 import { GraphicsLayer, RasterTileLayer, VectorTileLayer, DynamicPointLayer, WGSLLayer } from "mapgpu/layers";
@@ -6,6 +6,7 @@ import { appConfigSettings } from '../config/app-config';
 import { Joystick } from '../joystick/joystick';
 import { type JoystickVector } from '../movement/ground-movement';
 import { Player } from '../player/player';
+import { FigurineCollection } from '../figurine/figurine-collection';
 import { ComputePointCloud } from '../point-cloud/compute-point-cloud';
 import {
   POINT_SIZE_FAR_PX,
@@ -14,14 +15,18 @@ import {
   WAVE_FULL_RADIUS_M,
   WAVE_MIN_AMPLITUDE_SCALE,
   YAW_RAD_PER_SEC,
+  isFigurineStabilized,
 } from '../point-cloud/figurine-cloud-anim';
 
 export type FigurinePointCloudLayer = 'wgsl' | 'compute';
 
 interface WgslFigurineCloud {
+  id: string;
   layer: WGSLLayer;
   originX: number;
   originY: number;
+  /** Latched calm: uniforms stay put and the shader ignores player distance. */
+  stable: boolean;
 }
 
 @Component({
@@ -45,6 +50,7 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   readonly rafFps = signal(0);
   readonly drawFps = signal(0);
 
+  private readonly figurines = inject(FigurineCollection);
   private mapView!: MapView;
   private joystickVector: JoystickVector = { x: 0, y: 0 };
   private lastFrameMs: number | null = null;
@@ -92,24 +98,48 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     }
     const longitude = player.longitude();
     const latitude = player.latitude();
-    for (const cloud of this.computeClouds) {
-      cloud.setPlayerLonLat(longitude, latitude);
-    }
     const [playerX, playerY] = lonLatToMercator(longitude, latitude);
-    for (const cloud of this.wgslClouds) {
-      cloud.layer.setCustomUniforms(
-        new Float32Array([
-          cloud.originX,
-          cloud.originY,
-          playerX,
-          playerY,
-          WAVE_CALM_RADIUS_M,
-          WAVE_FULL_RADIUS_M,
-          YAW_RAD_PER_SEC,
-          0,
-        ]),
-      );
+    for (const cloud of this.computeClouds) {
+      if (cloud.setPlayerLonLat(longitude, latitude) && cloud.figurineId) {
+        this.figurines.collect(cloud.figurineId);
+      }
     }
+    for (const cloud of this.wgslClouds) {
+      this.syncWgslCloud(cloud, playerX, playerY);
+    }
+  }
+
+  private syncWgslCloud(cloud: WgslFigurineCloud, playerX: number, playerY: number): void {
+    if (cloud.stable) {
+      return;
+    }
+    const distance = Math.hypot(playerX - cloud.originX, playerY - cloud.originY);
+    if (isFigurineStabilized(distance)) {
+      cloud.stable = true;
+      this.figurines.collect(cloud.id);
+    }
+    cloud.layer.setCustomUniforms(
+      this.figurineCloudUniforms(cloud.originX, cloud.originY, playerX, playerY, cloud.stable),
+    );
+  }
+
+  private figurineCloudUniforms(
+    originX: number,
+    originY: number,
+    playerX: number,
+    playerY: number,
+    stable: boolean,
+  ): Float32Array {
+    return new Float32Array([
+      originX,
+      originY,
+      playerX,
+      playerY,
+      WAVE_CALM_RADIUS_M,
+      WAVE_FULL_RADIUS_M,
+      YAW_RAD_PER_SEC,
+      stable ? 1 : 0,
+    ]);
   }
 
   async ngAfterViewInit(): Promise<void> {
@@ -122,14 +152,14 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
     }
     this.mapView.on('frame', this.onFrame);
     if (this.usesJoystick) {
-      // this.installJoystickRenderKeepAlive();
-      // const [longitude, latitude] = appConfigSettings.controls.joystick.playerStart;
-      // this.playerRef()?.place(longitude, latitude);
-      // this.lockFollowCamera();
-      // this.syncPlayerScreen();
+      this.installJoystickRenderKeepAlive();
+      const [longitude, latitude] = appConfigSettings.controls.joystick.playerStart;
+      this.playerRef()?.place(longitude, latitude);
+      this.lockFollowCamera();
+      this.syncPlayerScreen();
     }
     await this.addFigurinePointClouds();
-    // this.syncCloudPlayerProximity();
+    this.syncCloudPlayerProximity();
   }
 
 
@@ -207,14 +237,10 @@ fn fs_main() -> @location(0) vec4<f32> {
   }
 
   async addFigurinePointClouds(): Promise<void> {
-    const figurinesData = await fetch('/data/figurines-data.json').then(r => r.json());
-    // for (const figurine of Object.keys(figurinesData)) {
-    //   const data = figurinesData[figurine];
-    //   console.log(data);
-    //   await this.drawFigurinePointCloud(figurine, data.longitude, data.latitude, 'wgsl');
-    // }
-    const sampleData = figurinesData["jon-lord"];
-    await this.drawFigurinePointCloudWgslDebug("jon-lord", sampleData.longitude, sampleData.latitude);
+    await this.figurines.load();
+    for (const figurine of this.figurines.figurines()) {
+      await this.drawFigurinePointCloud(figurine.id, figurine.longitude, figurine.latitude, 'wgsl');
+    }
   }
 
   ngOnDestroy(): void {
@@ -395,6 +421,7 @@ fn fs_main() -> @location(0) vec4<f32> {
       `/data/json/point-clouds/${jsonName}`,
       {
         id: `${pointsJsonName}-cloud-compute`,
+        figurineId: pointsJsonName,
         anchorLon: longitude,
         anchorLat: latitude,
         scale: 120,
@@ -465,7 +492,7 @@ struct CustomUniforms {
   calmRadius: f32,
   fullRadius: f32,
   yawRadPerSec: f32,
-  _pad: f32,
+  stable: f32,
 };
 
 struct VertexInput {
@@ -530,8 +557,10 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
   );
 
   // Dampen vertical wave as the player nears this point; grow sprite size.
+  // stable latches the calm pose so leaving the figurine does not revive the wave.
   let dist = length(animatedPos.xy - custom.playerXY);
-  let nearness = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let proximity = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let nearness = select(proximity, 1.0, custom.stable > 0.5);
   let ampScale = mix(1.0, MIN_AMP_SCALE, nearness);
   let pointSize = mix(POINT_SIZE_FAR, POINT_SIZE_NEAR, nearness);
 
@@ -580,18 +609,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     await mapView.when();
 
     // Seed custom uniforms before first draw so the pipeline includes @group(2).
-    layer.setCustomUniforms(
-      new Float32Array([
-        originX,
-        originY,
-        1e12,
-        1e12,
-        WAVE_CALM_RADIUS_M,
-        WAVE_FULL_RADIUS_M,
-        YAW_RAD_PER_SEC,
-        0,
-      ]),
-    );
+    layer.setCustomUniforms(this.figurineCloudUniforms(originX, originY, 1e12, 1e12, false));
 
     const jsonName = pointsJsonName.endsWith('.json')
       ? pointsJsonName
@@ -632,7 +650,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       vertexCount: 6,
       instanceCount: data.points.length,
     });
-    this.wgslClouds.push({ layer, originX, originY });
+    this.wgslClouds.push({ id: pointsJsonName, layer, originX, originY, stable: false });
     layer.requestRender();
   }
 

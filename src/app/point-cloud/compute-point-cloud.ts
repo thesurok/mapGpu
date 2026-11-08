@@ -10,6 +10,7 @@ import {
   WAVE_FULL_RADIUS_M,
   WAVE_MIN_AMPLITUDE_SCALE,
   YAW_RAD_PER_SEC,
+  isFigurineStabilized,
 } from './figurine-cloud-anim';
 
 /** One rest particle: rest.xyz + wavelength, phase + amplitude + heightT + pad. */
@@ -26,6 +27,8 @@ const USAGE_VERTEX = 0x0020;
 
 export interface ComputePointCloudOptions {
   id?: string;
+  /** Collectible figurine this cloud belongs to. Omitted for test clouds. */
+  figurineId?: string;
   anchorLon: number;
   anchorLat: number;
   /** Blender units → metres. */
@@ -46,9 +49,11 @@ interface PainterJson {
  *
  * Animation: vertical sine wave + slow rotation around the anchor up-axis.
  * Wave amplitude falls off as the player approaches each point (almost static nearby);
- * point sprites grow as the wave calms.
+ * point sprites grow as the wave calms. Once the player stabilizes the figurine,
+ * the calm pose latches and player distance is ignored.
  */
 export class ComputePointCloud {
+  readonly figurineId: string | null;
   private readonly device: GPUDevice;
   private readonly mapView: MapView;
   private layer: WGSLLayer | null = null;
@@ -57,13 +62,15 @@ export class ComputePointCloud {
   private paramsBuffer: GPUBuffer | null = null;
   private computePipeline: GPUComputePipeline | null = null;
   private computeBindGroup: GPUBindGroup | null = null;
-  /** time, count, originXY, playerXY, calmRadius, fullRadius */
-  private paramsData = new Float32Array(8);
+  /** time, count, originXY, playerXY, calmRadius, fullRadius, stable, pad×3 */
+  private paramsData = new Float32Array(12);
   private originX = 0;
   private originY = 0;
   /** Player ground position in EPSG:3857 metres; far away until set. */
   private playerX = 1e12;
   private playerY = 1e12;
+  /** Latched calm: distance no longer affects wave amplitude or point size. */
+  private stable = false;
   private pointCount = 0;
   private frameHandler: ((e: { frameNumber: number; fps: number }) => void) | null = null;
   private startTime = performance.now() / 1000;
@@ -72,7 +79,7 @@ export class ComputePointCloud {
   private constructor(
     mapView: MapView,
     renderEngine: RenderEngine,
-    _options: ComputePointCloudOptions,
+    options: ComputePointCloudOptions,
   ) {
     const device = renderEngine.device;
     if (!device) {
@@ -80,6 +87,7 @@ export class ComputePointCloud {
     }
     this.device = device;
     this.mapView = mapView;
+    this.figurineId = options.figurineId ?? null;
   }
 
   static async create(
@@ -159,7 +167,7 @@ export class ComputePointCloud {
 
     this.paramsBuffer = this.device.createBuffer({
       label: 'point-cloud-sim-params',
-      size: 32, // 8 × f32
+      size: this.paramsData.byteLength, // 12 × f32, 16-byte aligned
       usage: USAGE_UNIFORM | USAGE_COPY_DST,
     });
 
@@ -238,6 +246,10 @@ struct CustomUniforms {
   playerXY: vec2<f32>,
   calmRadius: f32,
   fullRadius: f32,
+  stable: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 struct VertexInput {
@@ -284,8 +296,10 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vid: u32) -> VertexOutput 
   );
 
   // Same falloff as compute wave damping: near player → larger, calmer points.
+  // Once stabilized, stay at the calm size even if the player leaves.
   let dist = length(input.data.xy - custom.playerXY);
-  let nearness = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let proximity = 1.0 - smoothstep(custom.calmRadius, custom.fullRadius, dist);
+  let nearness = select(proximity, 1.0, custom.stable > 0.5);
   let pointSize = mix(POINT_SIZE_FAR, POINT_SIZE_NEAR, nearness);
 
   let offset = quadOffsets[vid];
@@ -327,11 +341,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     });
   }
 
-  /** Update the player ground position used to damp wave amplitude / grow points. */
-  setPlayerLonLat(longitude: number, latitude: number): void {
+  /**
+   * Update the player ground position used to damp wave amplitude / grow points.
+   * Returns true on the frame the cloud latches calm. Later calls ignore distance.
+   */
+  setPlayerLonLat(longitude: number, latitude: number): boolean {
+    if (this.stable) {
+      return false;
+    }
     const [x, y] = lonLatToMercator(longitude, latitude);
     this.playerX = x;
     this.playerY = y;
+    if (!isFigurineStabilized(Math.hypot(x - this.originX, y - this.originY))) {
+      return false;
+    }
+    this.stable = true;
+    return true;
   }
 
   private syncRenderProximityUniforms(): void {
@@ -341,6 +366,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         this.playerY,
         WAVE_CALM_RADIUS_M,
         WAVE_FULL_RADIUS_M,
+        this.stable ? 1 : 0,
+        0,
+        0,
+        0,
       ]),
     );
   }
@@ -364,6 +393,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     this.paramsData[5] = this.playerY;
     this.paramsData[6] = WAVE_CALM_RADIUS_M;
     this.paramsData[7] = WAVE_FULL_RADIUS_M;
+    this.paramsData[8] = this.stable ? 1 : 0;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsData);
     this.syncRenderProximityUniforms();
 
@@ -417,6 +447,10 @@ struct SimParams {
   playerY: f32,
   calmRadius: f32,
   fullRadius: f32,
+  stable: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var<storage, read> restParticles: array<RestParticle>;
@@ -452,13 +486,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   );
 
   // Dampen vertical wave as the player nears this point (ground distance).
+  // Once stabilized, keep the calm amplitude and stop reading player distance.
   let toPlayer = pos.xy - vec2<f32>(params.playerX, params.playerY);
   let dist = length(toPlayer);
-  let ampScale = mix(
+  let liveScale = mix(
     MIN_AMP_SCALE,
     1.0,
     smoothstep(params.calmRadius, params.fullRadius, dist),
   );
+  let ampScale = select(liveScale, MIN_AMP_SCALE, params.stable > 0.5);
   pos.z += sin(params.time * (TWO_PI / wavelength) + p.wave.x) * p.wave.y * ampScale;
 
   // w carries normalized rest height for the fragment gradient

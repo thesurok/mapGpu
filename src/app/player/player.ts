@@ -1,5 +1,7 @@
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { appConfigSettings } from '../config/app-config';
+import { FigurineCollection } from '../figurine/figurine-collection';
+import { nearestUnclaimedFigurine } from '../figurine/nearest-unclaimed';
 import { joystickToEastNorth, offsetLonLat, type JoystickVector } from '../movement/ground-movement';
 
 /** Nipple deflections smaller than this do not move or turn the player. */
@@ -20,6 +22,8 @@ const NIPPLE_DEADZONE = 0.08;
   styleUrl: './player.css',
 })
 export class Player {
+  private readonly collection = inject(FigurineCollection);
+
   /** CSS pixel from `MapView.toScreen`, relative to the map overlay. */
   readonly screenX = input(0);
   readonly screenY = input(0);
@@ -32,10 +36,33 @@ export class Player {
   readonly latitude = signal(this.start[1]);
   readonly headingDeg = signal(0);
 
+  /** Closest figurine that is still unclaimed. */
+  readonly nextTarget = computed(() =>
+    nearestUnclaimedFigurine(
+      this.longitude(),
+      this.latitude(),
+      this.collection.figurines(),
+      this.collection.collected(),
+    ),
+  );
+
+  /** Ground metres to `nextTarget`, rounded for the counter. */
+  readonly distanceM = computed(() => {
+    const target = this.nextTarget();
+    return target ? Math.round(target.distanceM) : 0;
+  });
+
   /** Screen-space facing: world heading minus the camera's clockwise bearing. */
   readonly markerTransform = computed(
     () => `translate(-50%, -50%) rotate(${this.headingDeg() - this.cameraBearingDeg()}deg)`,
   );
+
+  /** Points from the player toward the next unclaimed cloud, in screen space. */
+  readonly arrowTransform = computed(() => {
+    const target = this.nextTarget();
+    const bearing = target ? target.bearingDeg : 0;
+    return `translate(-50%, -50%) rotate(${bearing - this.cameraBearingDeg()}deg)`;
+  });
 
   place(longitude: number, latitude: number): void {
     this.longitude.set(longitude);

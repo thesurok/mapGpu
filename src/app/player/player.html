@@ -3,4 +3,12 @@
   <span class="nose"></span>
   <span class="body"></span>
 </div>
+@if (nextTarget()) {
+<div class="guide" [style.left.px]="screenX()" [style.top.px]="screenY()" [style.transform]="arrowTransform()">
+  <span class="arrow"></span>
+</div>
+}
+}
+@if (nextTarget()) {
+<div class="distance">{{ distanceM() }} m</div>
 }
