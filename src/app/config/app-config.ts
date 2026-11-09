@@ -17,6 +17,7 @@ export const appConfigSettings: AppConfigSettings = {
       followPitch: 35,
       followBearing: 0,
       moveSpeedMps: 40,
+      moveResponseSeconds: 0.18,
       radiusPx: 72,
       playerStart: [22.298340533604744, 48.62222379006886],
     },

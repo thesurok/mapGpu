@@ -2,8 +2,8 @@ import { nearestUnclaimedFigurine } from './nearest-unclaimed';
 import type { FigurineSite } from './figurine-collection';
 
 const sites: FigurineSite[] = [
-  { id: 'near', longitude: 22.301, latitude: 48.622 },
-  { id: 'far', longitude: 22.32, latitude: 48.622 },
+  { id: 'near', longitude: 22.301, latitude: 48.622, title: 'Near', description: 'Near figurine' },
+  { id: 'far', longitude: 22.32, latitude: 48.622, title: 'Far', description: 'Far figurine' },
 ];
 
 describe('nearestUnclaimedFigurine', () => {

@@ -4,12 +4,16 @@ export interface FigurineSite {
   id: string;
   longitude: number;
   latitude: number;
+  title: string;
+  description: string;
 }
 
 interface FigurineDataFile {
   [id: string]: {
     longitude: number;
     latitude: number;
+    title?: string;
+    description?: string;
   };
 }
 
@@ -51,6 +55,8 @@ export class FigurineCollection {
           id,
           longitude: site.longitude,
           latitude: site.latitude,
+          title: site.title ?? '',
+          description: site.description ?? '',
         })),
       );
     } catch {

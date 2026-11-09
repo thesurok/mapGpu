@@ -1,6 +1,8 @@
 :host {
   display: block;
   box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
   width: 76px;
   height: 96px;
   padding: 6px;

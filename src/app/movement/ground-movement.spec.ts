@@ -1,4 +1,11 @@
-import { eastNorthBetween, joystickToEastNorth, offsetLonLat } from './ground-movement';
+import {
+  applyStickDeadzone,
+  dampDegrees,
+  eastNorthBetween,
+  joystickToEastNorth,
+  offsetLonLat,
+  smoothEastNorth,
+} from './ground-movement';
 
 describe('joystickToEastNorth', () => {
   it('maps stick-up to north when the camera faces north', () => {
@@ -54,5 +61,58 @@ describe('offsetLonLat', () => {
     const equator = offsetLonLat(0, 0, eastMeters, 0);
     const north = offsetLonLat(0, 60, eastMeters, 0);
     expect(north.longitude - 0).toBeGreaterThan(equator.longitude - 0);
+  });
+});
+
+describe('smoothEastNorth', () => {
+  it('moves partway toward the target instead of snapping', () => {
+    const next = smoothEastNorth({ east: 0, north: 0 }, { east: 0, north: 40 }, 0.18, 0.18);
+    expect(next.north).toBeGreaterThan(20);
+    expect(next.north).toBeLessThan(30);
+    expect(next.east).toBeCloseTo(0);
+  });
+
+  it('matches one step to several shorter steps of the same target', () => {
+    const target = { east: 10, north: -4 };
+    const once = smoothEastNorth({ east: 0, north: 0 }, target, 0.05, 0.2);
+    let stepped = { east: 0, north: 0 };
+    for (let i = 0; i < 5; i++) {
+      stepped = smoothEastNorth(stepped, target, 0.01, 0.2);
+    }
+    expect(stepped.east).toBeCloseTo(once.east, 6);
+    expect(stepped.north).toBeCloseTo(once.north, 6);
+  });
+
+  it('snaps when the response is zero', () => {
+    const next = smoothEastNorth({ east: 1, north: 2 }, { east: 8, north: 9 }, 0.016, 0);
+    expect(next).toEqual({ east: 8, north: 9 });
+  });
+});
+
+describe('dampDegrees', () => {
+  it('turns the short way across north', () => {
+    const towardEastOfNorth = dampDegrees(350, 10, 0.1, 0.1);
+    const towardWestOfNorth = dampDegrees(10, 350, 0.1, 0.1);
+    expect(towardEastOfNorth).toBeGreaterThan(350);
+    expect(towardEastOfNorth).toBeLessThan(370);
+    expect(towardWestOfNorth).toBeLessThan(10);
+    expect(towardWestOfNorth).toBeGreaterThan(-10);
+  });
+});
+
+describe('applyStickDeadzone', () => {
+  it('zeroes a deflection inside the deadzone', () => {
+    expect(applyStickDeadzone({ x: 0.05, y: 0 }, 0.08)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('keeps a full deflection at full length', () => {
+    const next = applyStickDeadzone({ x: 0, y: -1 }, 0.08);
+    expect(next.x).toBeCloseTo(0);
+    expect(next.y).toBeCloseTo(-1);
+  });
+
+  it('starts at zero as the stick leaves the deadzone', () => {
+    const next = applyStickDeadzone({ x: 0.08, y: 0 }, 0.08);
+    expect(next).toEqual({ x: 0, y: 0 });
   });
 });

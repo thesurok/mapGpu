@@ -75,6 +75,73 @@ export function eastNorthBetween(
   };
 }
 
+const MIN_RESPONSE_SECONDS = 1e-3;
+
+/**
+ * Ease a ground velocity toward a target.
+ *
+ * `responseSeconds` is the exponential time constant. The same target sampled
+ * as one step or as several shorter steps ends at the same velocity, so a
+ * dropped frame does not change how the motion feels.
+ * A non-positive response snaps to the target.
+ */
+export function smoothEastNorth(
+  current: EastNorthMeters,
+  target: EastNorthMeters,
+  dtSeconds: number,
+  responseSeconds: number,
+): EastNorthMeters {
+  if (!(responseSeconds > 0)) {
+    return { east: target.east, north: target.north };
+  }
+  const alpha = 1 - Math.exp(-Math.max(0, dtSeconds) / Math.max(responseSeconds, MIN_RESPONSE_SECONDS));
+  return {
+    east: current.east + (target.east - current.east) * alpha,
+    north: current.north + (target.north - current.north) * alpha,
+  };
+}
+
+/** Shortest-arc ease from one compass heading to another, in degrees. */
+export function dampDegrees(
+  currentDeg: number,
+  targetDeg: number,
+  dtSeconds: number,
+  responseSeconds: number,
+): number {
+  if (!(responseSeconds > 0)) {
+    return targetDeg;
+  }
+  const alpha = 1 - Math.exp(-Math.max(0, dtSeconds) / Math.max(responseSeconds, MIN_RESPONSE_SECONDS));
+  return currentDeg + shortestDegreesDelta(currentDeg, targetDeg) * alpha;
+}
+
+function shortestDegreesDelta(currentDeg: number, targetDeg: number): number {
+  let delta = (targetDeg - currentDeg) % 360;
+  if (delta > 180) {
+    delta -= 360;
+  }
+  if (delta < -180) {
+    delta += 360;
+  }
+  return delta;
+}
+
+/**
+ * Ignore deflections inside `deadzone` and rescale the rest so the rim is still full speed.
+ * A stick that crosses the deadzone therefore starts at zero instead of popping.
+ */
+export function applyStickDeadzone(vector: JoystickVector, deadzone: number): JoystickVector {
+  const magnitude = Math.hypot(vector.x, vector.y);
+  if (!(deadzone < 1) || magnitude <= deadzone || magnitude === 0) {
+    return { x: 0, y: 0 };
+  }
+  const scale = (magnitude - deadzone) / ((1 - deadzone) * magnitude);
+  return {
+    x: vector.x * scale,
+    y: vector.y * scale,
+  };
+}
+
 export function offsetLonLat(
   longitude: number,
   latitude: number,

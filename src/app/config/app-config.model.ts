@@ -16,6 +16,13 @@ export interface JoystickControlSettings {
   followBearing: number;
   /** Ground speed in metres per second at full nipple deflection. */
   moveSpeedMps: number;
+  /**
+   * How quickly ground speed eases toward the stick, in seconds.
+   * This is an exponential time constant: about two thirds of a speed
+   * change lands in this long, and the rest follows. Releasing the stick
+   * brakes in about half this time. `0` snaps.
+   */
+  moveResponseSeconds: number;
   /** Joystick base radius in CSS pixels. */
   radiusPx: number;
   /** Player start position as [longitude, latitude]. */

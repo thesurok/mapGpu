@@ -1,4 +1,4 @@
-import { Component, type ElementRef, AfterViewInit, OnDestroy, ViewChild, inject, signal, viewChild } from '@angular/core';
+import { Component, type ElementRef, AfterViewInit, OnDestroy, ViewChild, computed, inject, signal, viewChild } from '@angular/core';
 import { MapView, SimpleRenderer, lonLatToMercator } from "mapgpu/core";
 import { RenderEngine } from "mapgpu/render";
 import { GraphicsLayer, RasterTileLayer, VectorTileLayer, DynamicPointLayer, WGSLLayer } from "mapgpu/layers";
@@ -7,6 +7,8 @@ import { Joystick } from '../joystick/joystick';
 import { type JoystickVector } from '../movement/ground-movement';
 import { Player } from '../player/player';
 import { FigurineCollection } from '../figurine/figurine-collection';
+import { FigurineCallout } from '../figurine-callout/figurine-callout';
+import { figurineCloudAtPoint, type CloudFootprint } from '../figurine/figurine-cloud-hit';
 import { ComputePointCloud } from '../point-cloud/compute-point-cloud';
 import {
   POINT_SIZE_FAR_PX,
@@ -20,13 +22,8 @@ import {
 
 export type FigurinePointCloudLayer = 'wgsl' | 'compute';
 
-interface WgslFigurineCloud {
-  id: string;
+interface WgslFigurineCloud extends CloudFootprint {
   layer: WGSLLayer;
-  originX: number;
-  originY: number;
-  /** Latched calm: uniforms stay put and the shader ignores player distance. */
-  stable: boolean;
 }
 
 @Component({
@@ -34,6 +31,13 @@ interface WgslFigurineCloud {
   imports: [Joystick, Player],
   templateUrl: './map-gpu-root.html',
   styleUrl: './map-gpu-root.css',
+  host: {
+    '(pointerdown)': 'onStagePointerDown($event)',
+    '(pointermove)': 'onStagePointerMove($event)',
+    '(pointerup)': 'onStagePointerUp($event)',
+    '(pointercancel)': 'onStagePointerUp($event)',
+    '(pointerleave)': 'onStagePointerLeave($event)',
+  },
 })
 export class MapGpuRoot implements AfterViewInit, OnDestroy {
   @ViewChild('mapGpuContainer')
@@ -47,10 +51,19 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
   readonly playerScreenX = signal(0);
   readonly playerScreenY = signal(0);
   readonly playerVisible = signal(false);
+  /** Center prompt, hidden once the player takes a first step. */
+  readonly showCollectCallout = computed(
+    () => this.usesJoystick && !this.playerRef()?.hasMoved(),
+  );
   readonly rafFps = signal(0);
   readonly drawFps = signal(0);
 
   private readonly figurines = inject(FigurineCollection);
+  private readonly callout = inject(FigurineCallout);
+  /** Last pointer position, in canvas pixels and viewport pixels. */
+  private pointer: { screenX: number; screenY: number; clientX: number; clientY: number } | null = null;
+  /** Press origin, so a joystick drag is not treated as a tap. */
+  private press: { x: number; y: number; pointerId: number } | null = null;
   private mapView!: MapView;
   private joystickVector: JoystickVector = { x: 0, y: 0 };
   private lastFrameMs: number | null = null;
@@ -81,12 +94,50 @@ export class MapGpuRoot implements AfterViewInit, OnDestroy {
       this.drawFrames += 1;
     }
     this.syncCloudPlayerProximity();
+    this.syncCalloutHover();
     if (!this.usesJoystick) {
       return;
     }
 
     this.syncPlayerScreen();
   };
+
+  onStagePointerDown(event: PointerEvent): void {
+    if (event.button !== 0) {
+      return;
+    }
+    this.press = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+  }
+
+  onStagePointerMove(event: PointerEvent): void {
+    if (event.buttons !== 0) {
+      return;
+    }
+    this.trackHover(event.clientX, event.clientY);
+  }
+
+  onStagePointerUp(event: PointerEvent): void {
+    const press = this.press;
+    this.press = null;
+    if (!press || press.pointerId !== event.pointerId) {
+      return;
+    }
+    const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+    if (moved <= 10) {
+      this.trackTap(event.clientX, event.clientY);
+      return;
+    }
+    this.trackHover(event.clientX, event.clientY);
+  }
+
+  onStagePointerLeave(event: PointerEvent): void {
+    if (this.callout.covers(event.clientX, event.clientY)) {
+      return;
+    }
+    this.pointer = null;
+    this.press = null;
+    this.callout.hideHover();
+  }
 
   private syncCloudPlayerProximity(): void {
     if (this.computeClouds.length === 0 && this.wgslClouds.length === 0) {
@@ -620,11 +671,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let minZ = Infinity;
     let maxZ = -Infinity;
+    let maxGround = 0;
     for (const p of data.points) {
       minZ = Math.min(minZ, p.z);
       maxZ = Math.max(maxZ, p.z);
+      maxGround = Math.max(maxGround, Math.hypot(p.x, p.y));
     }
     const zSpan = Math.max(maxZ - minZ, 1e-6);
+    const radiusM = maxGround * scale;
+    const heightM = (zSpan * scale) / flatHeightCompensation;
 
     // Interleaved: rest.xyz, wavelength, phase, amplitude, heightT, pad — uploaded once.
     const instances = new Float32Array(data.points.length * 8);
@@ -650,7 +705,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       vertexCount: 6,
       instanceCount: data.points.length,
     });
-    this.wgslClouds.push({ id: pointsJsonName, layer, originX, originY, stable: false });
+    this.wgslClouds.push({
+      id: pointsJsonName,
+      layer,
+      originX,
+      originY,
+      stable: false,
+      radiusM,
+      heightM,
+    });
     layer.requestRender();
   }
 
@@ -703,5 +766,88 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     this.playerScreenX.set(screen[0]);
     this.playerScreenY.set(screen[1]);
     this.playerVisible.set(true);
+  }
+
+  private trackHover(clientX: number, clientY: number): void {
+    this.callout.resumeHover();
+    const point = this.canvasPoint(clientX, clientY);
+    if (!point) {
+      return;
+    }
+    this.pointer = point;
+    this.syncCalloutHover();
+  }
+
+  private trackTap(clientX: number, clientY: number): void {
+    const point = this.canvasPoint(clientX, clientY);
+    if (!point || !this.mapView) {
+      return;
+    }
+    this.pointer = point;
+    const cloud = this.stableCloudAt(this.mapView.toMap(point.screenX, point.screenY));
+    if (!cloud) {
+      if (!this.callout.covers(clientX, clientY)) {
+        this.callout.close();
+      }
+      return;
+    }
+    const site = this.figurines.figurines().find((item) => item.id === cloud.id);
+    if (!site) {
+      return;
+    }
+    this.callout.pin({
+      id: cloud.id,
+      title: site.title,
+      description: site.description,
+      x: clientX,
+      y: clientY,
+    });
+  }
+
+  private syncCalloutHover(): void {
+    const pointer = this.pointer;
+    if (!pointer || !this.mapView || this.press) {
+      return;
+    }
+    const cloud = this.stableCloudAt(this.mapView.toMap(pointer.screenX, pointer.screenY));
+    if (cloud) {
+      const site = this.figurines.figurines().find((item) => item.id === cloud.id);
+      if (!site) {
+        return;
+      }
+      this.callout.hover({
+        id: cloud.id,
+        title: site.title,
+        description: site.description,
+        x: pointer.clientX,
+        y: pointer.clientY,
+      });
+      return;
+    }
+    if (this.callout.covers(pointer.clientX, pointer.clientY)) {
+      return;
+    }
+    this.callout.hideHover();
+  }
+
+  private stableCloudAt(mapPoint: [number, number] | null): CloudFootprint | null {
+    if (!mapPoint || !this.mapView) {
+      return null;
+    }
+    const [x, y] = lonLatToMercator(mapPoint[0], mapPoint[1]);
+    return figurineCloudAtPoint(x, y, this.wgslClouds, this.mapView.pitch);
+  }
+
+  private canvasPoint(
+    clientX: number,
+    clientY: number,
+  ): { screenX: number; screenY: number; clientX: number; clientY: number } | null {
+    const rect = this.mapGpuContainer.nativeElement.getBoundingClientRect();
+    const screenX = clientX - rect.left;
+    const screenY = clientY - rect.top;
+    if (screenX < 0 || screenY < 0 || screenX > rect.width || screenY > rect.height) {
+      return null;
+    }
+    return { screenX, screenY, clientX, clientY };
   }
 }

@@ -3,6 +3,7 @@
     <app-figurine-icon
       [name]="figurine.id"
       [collected]="collection.collected().has(figurine.id)"
+      (click)="onFigurinePress(figurine, $event)"
     />
   }
 </section>

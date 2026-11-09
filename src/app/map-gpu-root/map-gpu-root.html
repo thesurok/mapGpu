@@ -11,4 +11,7 @@
     [visible]="playerVisible()" />
   <app-joystick [radiusPx]="joystickRadiusPx" (vectorChange)="onJoystickVector($event)" />
   }
+  @if (showCollectCallout()) {
+  <p class="collect-callout">Collect All Figurines!</p>
+  }
 </div>

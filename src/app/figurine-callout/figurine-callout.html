@@ -1,0 +1,15 @@
+@if (placement(); as card) {
+  <article
+    #cardEl
+    class="card"
+    role="note"
+    [style.left.px]="card.left"
+    [style.top.px]="card.top"
+    (pointerenter)="callout.setPointerOverCard(true)"
+    (pointerleave)="onCardLeave()"
+  >
+    <button type="button" class="close" aria-label="Close" (click)="callout.dismiss()">×</button>
+    <h2 class="title">{{ card.title }}</h2>
+    <p class="description">{{ card.description }}</p>
+  </article>
+}
