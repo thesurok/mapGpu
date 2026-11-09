@@ -294,7 +294,7 @@ fn fs_main() -> @location(0) vec4<f32> {
 
     mapView.map.add(new RasterTileLayer({
       id: "osm",
-      urlTemplate: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      urlTemplate: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     }));
 
     // mapView.map.add(new VectorTileLayer({
