@@ -9,10 +9,10 @@ export const appConfigSettings: AppConfigSettings = {
   controls: {
     mode: 'joystick',
     joystick: {
-      followZoom: 16.5,
-      followPitch: 15,
+      followZoom: 17.5,
+      followPitch: 35,
       followBearing: 0,
-      moveSpeedMps: 10,
+      moveSpeedMps: 40,
       radiusPx: 72,
       playerStart: [22.298340533604744, 48.62222379006886],
     },
