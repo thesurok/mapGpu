@@ -9,7 +9,7 @@ export const appConfigSettings: AppConfigSettings = {
   controls: {
     mode: 'joystick',
     joystick: {
-      followZoom: 17.5,
+      followZoom: 16.5,
       followPitch: 35,
       followBearing: 0,
       moveSpeedMps: 40,
